@@ -8,128 +8,77 @@
 #include <vector>
 #include <mpi.h>
 
-#define MASTER		0          /* taskid of first task */
-#define FROM_MASTER 1          /* setting a message type */
-#define FROM_WORKER 2          /* setting a message type */
+constexpr auto MASTER = 0;
+constexpr auto ROW_START_TAG = 1;
+constexpr auto ROW_END_TAG = 2;
+constexpr auto A_ROWS_TAG = 3;
+constexpr auto C_ROWS_TAG = 4;
 
-bool is_master()
-{
-	int taskid;
-	MPI_Comm_rank(MPI_COMM_WORLD, &taskid);
-	return taskid == MASTER;
-}
+constexpr auto DATA_TYPE = MPI_UNSIGNED_LONG;
+using T = unsigned long;
 
-template<typename T>
+template <typename T>
 class Matrix
 {
 private:
-	T**		data;
-	size_t  rows,
-			columns;
-
+	std::vector<T> data;
+	int rows, columns;
 	static double last_multiplication_time;
-	
+
 	void clear()
 	{
-		for (size_t i = 0; i < rows; i++)
-			delete[] data[i];
-		delete[] data;
+		data.clear();
+		rows = 0;
+		columns = 0;
 	}
 
 public:
 	Matrix()
-		:	data(nullptr),
-			rows(0),
-			columns(0)
+		:
+		rows(0),
+		columns(0),
+		data()
 	{}
 
-	Matrix(const Matrix& other)
+	Matrix(const int& rows, const int& columns)
+		:
+		rows(rows),
+		columns(columns),
+		data()
 	{
-		if (is_master())
+		try
 		{
-			rows = other.rows;
-			columns = other.columns;
-			data = new T * [rows];
-			for (size_t i = 0; i < rows; i++)
-			{
-				data[i] = new T[columns];
-				for (size_t j = 0; j < columns; j++)
-					data[i][j] = other.data[i][j];
-			}
+			if (rows < 1)
+				throw std::logic_error("Impossible rows count: " + std::to_string(rows));
+
+			if (columns < 1)
+				throw std::logic_error("Impossible columns count: " + std::to_string(columns));
 		}
+		catch (const std::logic_error& ex)
+		{
+			std::cout << '\n' << ex.what() << '\n';
+			_exit(EXIT_FAILURE);
+		}
+
+		data = std::vector<T>(this->rows * this->columns);
 	}
+
+	Matrix(const Matrix& other)
+		:
+		rows(other.rows),
+		columns(other.columns),
+		data(other.data)
+	{}
 
 	Matrix(Matrix&& other) noexcept
+		:
+		rows(other.rows),
+		columns(other.columns),
+		data(other.data)
 	{
-		if (is_master())
-		{
-			data = other.data;
-			rows = other.rows;
-			columns = other.columns;
-
-			other.data = nullptr;
-			other.rows = 0;
-			other.columns = 0;
-		}
-	}
-
-	Matrix(const std::vector<std::vector<T>>& other)
-	{
-		if (is_master())
-		{
-			try
-			{
-				const size_t column_size = other.begin()->size();
-				for (auto iter = other.begin() + 1; iter != other.end(); iter++)
-				{
-					if (iter->size() != column_size)
-						throw std::logic_error("Matrix dimmension mismatch");
-				}
-			}
-			catch (const std::logic_error& ex)
-			{
-				std::cout << '\n' << ex.what() << '\n';
-				_exit(EXIT_FAILURE);
-			}
-
-			rows = other.size();
-			columns = other.begin()->size();
-
-			data = new T * [rows];
-			for (size_t i = 0; i < rows; i++)
-			{
-				data[i] = new T[columns];
-				for (size_t j = 0; j < columns; j++)
-					data[i][j] = other[i][j];
-			}
-		}
-	}
-
-	Matrix(const size_t& rows, const size_t& columns)
-	{
-		if (is_master())
-		{
-			try
-			{
-				if (rows == 0)
-					throw std::logic_error("Impossible rows count: " + std::to_string(rows));
-
-				if (columns == 0)
-					throw std::logic_error("Impossible columns count: " + std::to_string(columns));
-			}
-			catch (const std::logic_error& ex)
-			{
-				std::cout << '\n' << ex.what() << '\n';
-				_exit(EXIT_FAILURE);
-			}
-
-			this->rows = rows;
-			this->columns = columns;
-
-			data = new T * [rows];
-			for (size_t i = 0; i < rows; i++)
-				data[i] = new T[columns];
-		}
+		other.data.clear();
+		other.rows = 0;
+		other.columns = 0;
 	}
 
 	~Matrix()
@@ -138,55 +87,23 @@ public:
 	}
 
 
-	Matrix& operator= (const Matrix& other)
+	Matrix& operator= (Matrix other)
 	{
-		if (this == &other)
-			return *this;
-
-		if (is_master())
-		{
-			T** temp_data = new T * [other.rows];
-			for (size_t i = 0; i < other.rows; i++)
-			{
-				temp_data[i] = new T[other.columns];
-				for (size_t j = 0; j < other.columns; j++)
-					temp_data[i][j] = other.data[i][j];
-			}
-
-			clear();
-
-			data = temp_data;
-			rows = other.rows;
-			columns = other.columns;
-		}
+		std::swap(data, other.data);
+		std::swap(rows, other.rows);
+		std::swap(columns, other.columns);
 		return *this;
 	}
 
-	Matrix& operator= (Matrix&& other)
-	{
-		if (this == &other)
-			return *this;
-		if (is_master())
-		{
-			clear();
-
-			data = other.data;
-			rows = other.rows;
-			columns = other.columns;
-
-			other.data = nullptr;
-			other.rows = 0;
-			other.columns = 0;
-		}
-		return *this;
-	}
-
-	Matrix operator* (Matrix& other)
+	T operator() (const int& row, const int& column) const
 	{
 		try
 		{
-			if (columns != other.rows)
-				throw std::logic_error("Multiplication is impossible: mismatch in matrix A columns and matrix B rows");
+			if (row < 0 || row >= rows)
+				throw std::logic_error("Wrong row index: " + std::to_string(rows));
+
+			if (column < 0 || column >= columns)
+				throw std::logic_error("Wrong column index: " + std::to_string(columns));
 		}
 		catch (const std::logic_error& ex)
 		{
@@ -194,78 +111,112 @@ public:
 			_exit(EXIT_FAILURE);
 		}
 
-		Matrix<T> c;
+		return data[static_cast<size_t>(row * columns + column)];
+	}
 
-		int		numtasks;
-		size_t	local_rows,            /* rows of matrix A sent to each worker */
-				offset;				   /* used to determine rows sent to each worker */
-		MPI_Status status;
-
-		MPI_Comm_size(MPI_COMM_WORLD, &numtasks);
-
+	T& operator() (const int& row, const int& column)
+	{
 		try
 		{
-			if (numtasks < 2)
-				throw std::runtime_error("Not enough threads: " + std::to_string(numtasks) + "\nMinimum required is 2.");
+			if (row < 0 || row >= rows)
+				throw std::logic_error("Wrong row index: " + std::to_string(rows));
+
+			if (column < 0 || column >= columns)
+				throw std::logic_error("Wrong column index: " + std::to_string(columns));
 		}
-		catch (const std::runtime_error& ex)
+		catch (const std::logic_error& ex)
 		{
 			std::cout << '\n' << ex.what() << '\n';
-			MPI_Abort(MPI_COMM_WORLD, 1);
 			_exit(EXIT_FAILURE);
 		}
 
-		int numworkers = numtasks - 1;
+		return data[static_cast<size_t>(row * columns + column)];
+	}
 
-		if (is_master())
+	friend Matrix operator* (Matrix& a, Matrix& b)
+	{
+		int threads, taskid;
+		int row_start, row_end;
+		int granularity;
+		double start_time = 0.0;
+
+		MPI_Status status;
+		MPI_Request request;
+		Matrix c(a.columns, b.rows);
+
+		MPI_Comm_rank(MPI_COMM_WORLD, &taskid);
+		MPI_Comm_size(MPI_COMM_WORLD, &threads);
+
+		if (taskid == MASTER)
 		{
-			c = Matrix(rows, other.columns);
-
-			double start_time = MPI_Wtime();
-
-			size_t averow = rows / numworkers;
-			size_t extra = rows % numworkers;
-			offset = 0;
-			for (int dest = 1; dest <= numworkers; dest++)
+			try
 			{
-				local_rows = (dest <= extra) ? averow + 1 : averow;
-				MPI_Send(&offset, 1, MPI_UNSIGNED_LONG_LONG, dest, FROM_MASTER, MPI_COMM_WORLD);
-				MPI_Send(&local_rows, 1, MPI_UNSIGNED_LONG_LONG, dest, FROM_MASTER, MPI_COMM_WORLD);
-				MPI_Send(&data[offset][0], static_cast<int>(local_rows * columns), MPI_DOUBLE, dest, FROM_MASTER, MPI_COMM_WORLD);
-				MPI_Send(&other.data, static_cast<int>(columns * other.columns), MPI_DOUBLE, dest, FROM_MASTER, MPI_COMM_WORLD);
-				offset += local_rows;
+				if (a.columns != b.rows)
+					throw std::logic_error("Multiplication is impossible: mismatch in matrix A columns and matrix B rows");
+			}
+			catch (const std::logic_error& ex)
+			{
+				std::cout << '\n' << ex.what() << '\n';
+				MPI_Finalize();
+				_exit(EXIT_FAILURE);
 			}
 
-			for (int source = 1; source <= numworkers; source++)
+			start_time = MPI_Wtime();
+
+			for (int i = 1; i < threads; i++) 
 			{
-				MPI_Recv(&offset, 1, MPI_UNSIGNED_LONG_LONG, source, FROM_WORKER, MPI_COMM_WORLD, &status);
-				MPI_Recv(&local_rows, 1, MPI_UNSIGNED_LONG_LONG, source, FROM_WORKER, MPI_COMM_WORLD, &status);
-				MPI_Recv(&c.data[offset][0], static_cast<int>(local_rows * other.columns), MPI_DOUBLE, source, FROM_WORKER, MPI_COMM_WORLD, &status);
+				granularity = (a.rows / (threads - 1));
+				row_start = (i - 1) * granularity;
+
+				if (((i + 1) == threads) && ((a.rows % (threads - 1)) != 0)) 
+					row_end = a.rows;
+				else 
+					row_end = row_start + granularity;
+
+				MPI_Isend(&row_start, 1, MPI_INT, i, ROW_END_TAG, MPI_COMM_WORLD, &request);
+				MPI_Isend(&row_end, 1, MPI_INT, i, ROW_START_TAG, MPI_COMM_WORLD, &request);
+				MPI_Isend(&a(row_start, 0), (row_end - row_start) * a.columns , DATA_TYPE, i, A_ROWS_TAG, MPI_COMM_WORLD, &request);
+			}			
+		}
+
+		MPI_Bcast(&b(0, 0), b.rows * b.columns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+		if(taskid > MASTER)
+		{
+			MPI_Recv(&row_start, 1, MPI_INT, 0, ROW_END_TAG, MPI_COMM_WORLD, &status);
+			MPI_Recv(&row_end, 1, MPI_INT, 0, ROW_START_TAG, MPI_COMM_WORLD, &status);
+			MPI_Recv(&a(row_start, 0), (row_end - row_start) * a.columns, DATA_TYPE, 0, A_ROWS_TAG, MPI_COMM_WORLD, &status);
+
+			for (int i = row_start; i < row_end; i++) 
+			{
+				for (int j = 0; j < b.columns; j++) 
+				{
+					for (int k = 0; k < b.rows; k++) 
+						c(i, j) += (a(i, k) * b(k, j));
+				}
 			}
 
+			MPI_Isend(&row_start, 1, MPI_INT, 0, ROW_END_TAG, MPI_COMM_WORLD, &request);
+			MPI_Isend(&row_end, 1, MPI_INT, 0, ROW_START_TAG, MPI_COMM_WORLD, &request);
+			MPI_Isend(&c(row_start, 0), (row_end - row_start) * b.columns, DATA_TYPE, 0, C_ROWS_TAG, MPI_COMM_WORLD, &request);
+		}
+		
+		if (taskid == MASTER)
+		{
+			for (int i = 1; i < threads; i++) 
+			{
+				MPI_Recv(&row_start, 1, MPI_INT, i, ROW_END_TAG, MPI_COMM_WORLD, &status);
+				MPI_Recv(&row_end, 1, MPI_INT, i, ROW_START_TAG, MPI_COMM_WORLD, &status);
+				MPI_Recv(&c(row_start, 0), (row_end - row_start) * b.columns, DATA_TYPE, i, C_ROWS_TAG, MPI_COMM_WORLD, &status);
+			}
 			double end_time = MPI_Wtime();
 			last_multiplication_time = end_time - start_time;
 		}
-		else
-		{
-			MPI_Recv(&offset, 1, MPI_UNSIGNED_LONG_LONG, MASTER, FROM_MASTER, MPI_COMM_WORLD, &status);
-			MPI_Recv(&local_rows, 1, MPI_UNSIGNED_LONG_LONG, MASTER, FROM_MASTER, MPI_COMM_WORLD, &status);
-			MPI_Recv(&data, static_cast<int>(local_rows * columns), MPI_DOUBLE, MASTER, FROM_MASTER, MPI_COMM_WORLD, &status);
-			MPI_Recv(&other.data, static_cast<int>(columns * other.columns), MPI_DOUBLE, MASTER, FROM_MASTER, MPI_COMM_WORLD, &status);
 
-			for (size_t k = 0; k < other.columns; k++)
-				for (size_t i = 0; i < local_rows; i++)
-				{
-					c.data[i][k] = 0;
-					for (size_t j = 0; j < columns; j++)
-						c.data[i][k] += data[i][j] * other.data[j][k];
-				}
+		MPI_Barrier(MPI_COMM_WORLD);
+		if (taskid > MASTER)
+			c.clear();
 
-			MPI_Send(&offset, 1, MPI_UNSIGNED_LONG_LONG, MASTER, FROM_WORKER, MPI_COMM_WORLD);
-			MPI_Send(&local_rows, 1, MPI_UNSIGNED_LONG_LONG, MASTER, FROM_WORKER, MPI_COMM_WORLD);
-			MPI_Send(&c.data, static_cast<int>(local_rows * other.columns), MPI_DOUBLE, MASTER, FROM_WORKER, MPI_COMM_WORLD);
-			MPI_Finalize();
-		}
 		return c;
 	}
 
@@ -274,20 +225,19 @@ public:
 	{
 		try
 		{
-			std::vector<std::vector<T>> matrix;
-
 			std::ifstream file;
 			file.exceptions(std::ifstream::badbit);
 			file.open(filepath);
 
-			for (std::string buffer; getline(file, buffer); )
+			std::vector<std::vector<T>> matrix;
+			for (std::string buffer; getline(file, buffer);)
 			{
 				std::stringstream iss(buffer);
 
-				T number;
+				T value;
 				std::vector<T> temp;
-				while (iss >> number)
-					temp.push_back(number);
+				while (iss >> value)
+					temp.push_back(value);
 
 				matrix.push_back(temp);
 			}
@@ -296,8 +246,24 @@ public:
 			if (matrix.empty())
 				throw std::logic_error("No matrix in file \"" + filepath + '\"');
 
-			Matrix temp(matrix);
-			*this = temp;
+			const size_t column_size = matrix.begin()->size();
+			for (auto iter = matrix.begin() + 1; iter != matrix.end(); iter++)
+			{
+				if (iter->size() != column_size)
+					throw std::logic_error("Matrix dimmension mismatch");
+			}
+
+			clear();
+
+			rows = static_cast<int>(matrix.size());
+			columns = static_cast<int>(column_size);
+			data = std::vector<T>(rows * columns);
+			for (int i = 0; i < rows; i++)
+			{
+				for (int j = 0; j < columns; j++)
+					(*this)(i, j) = matrix[i][j];
+			}
+
 			return;
 		}
 		catch (std::ios_base::failure const& ex)
@@ -308,6 +274,7 @@ public:
 		{
 			std::cout << "\nLOGIC ERROR: " << ex.what() << '\n';
 		}
+		MPI_Finalize();
 		_exit(EXIT_FAILURE);
 	}
 
@@ -319,10 +286,10 @@ public:
 			file.exceptions(std::ofstream::badbit);
 			file.open(filepath);
 
-			for (size_t i = 0; i < rows; i++)
+			for (int i = 0; i < rows; i++)
 			{
-				for (size_t j = 0; j < columns; j++)
-					file << data[i][j] << ' ';
+				for (int j = 0; j < columns; j++)
+					file << data[static_cast<size_t>(i * columns + j)] << ' ';
 				file << '\n';
 			}
 
@@ -331,6 +298,7 @@ public:
 		catch (std::ios_base::failure const& ex)
 		{
 			std::cout << "\nWRITING ERROR: " << ex.what() << '\n';
+			MPI_Finalize();
 			_exit(EXIT_FAILURE);
 		}
 	}
@@ -351,12 +319,16 @@ public:
 		catch (std::ios_base::failure const& ex)
 		{
 			std::cout << "\nWRITING ERROR: " << ex.what() << '\n';
+			MPI_Finalize();
 			_exit(EXIT_FAILURE);
 		}
 	}
+
+	std::pair<int, int> size() const
+	{
+		return std::pair(rows, columns);
+	}
 };
 
-template<typename T>
 double Matrix<T>::last_multiplication_time = 0.0;
-
 #endif
